@@ -6,4 +6,3 @@ set(CMAKE_CXX_COMPILER "g++")
 
 add_executable(sik_radio main.cpp)
 add_executable(regex_test regex_test.cpp)
-git remote add origin
