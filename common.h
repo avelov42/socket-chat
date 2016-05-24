@@ -8,10 +8,9 @@ void fail_aux(const char* line_text, int line_number, const char* file_name, con
 
 void* safe_malloc(size_t bytes);
 void safe_all_write(int fd, char *buffer, size_t len);
-void safe_all_read(int fd, char* buffer, size_t len);
 
 void fatal(const char *fmt, ...);
-void ignore(const char* fmt, ...);
+void _ignore(const char* fmt, ...);
 
 #define negative_is_bad(fun, emsg) ((fun) < 0) ? fail_aux(#fun, __LINE__, __FILE__, emsg) : (void) 0
 #define zero_is_ok(fun, emsg) ((fun) != 0) ? fail_aux(#fun, __LINE__, __FILE__, emsg) : (void) 0

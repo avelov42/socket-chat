@@ -81,7 +81,7 @@ http://www.garymcgath.com/streamingprotocols.html
 http://www.indexcom.com/streaming/player/SHOUTcast.html
 http://www.smackfu.com/stuff/programming/shoutcast.html
 http://mpgedit.org/mpgedit/mpeg_format/mpeghdr.htm
-http://www.listenlive.eu/poland.html
+    http://www.listenlive.eu/poland.html
 
 == Część B ==
 

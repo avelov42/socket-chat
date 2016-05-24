@@ -54,7 +54,7 @@ void safe_all_write(int fd, char *buffer, size_t len)
     }
 }
 
-void ignore(const char* fmt, ...)
+void _ignore(const char* fmt, ...)
 {
     return;
 }

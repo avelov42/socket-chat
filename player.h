@@ -3,7 +3,6 @@
 
 #include <string>
 
-const int INVALID_ARGUMENT_EXIT_CODE = 1;
 const bool DEBUG = true;
 
 struct Arguments
