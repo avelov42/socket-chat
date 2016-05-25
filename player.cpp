@@ -6,11 +6,12 @@
 #include <boost/regex.hpp>
 #include <sys/poll.h>
 #include <fcntl.h>
+#include <bits/stl_queue.h>
 
 #include "player.h"
 #include "common.h"
 
-#define log _ignore
+#define log printf
 
 using namespace std;
 
@@ -18,8 +19,10 @@ const int RADIO = 0;
 const int MASTER = 1;
 const int HEADER_READ_SIZE = 128;
 const int HEADER_MAX_SIZE = 4096;
-const int RADIO_BUFFER_SIZE = 512;
+const int RADIO_BUFFER_SIZE = 777;
 const int MASTER_BUFFER_SIZE = 128;
+const int METADATA_MAX_SIZE = 4080;
+const int METADATA_SIZE_FACTOR = 16; //bytes per unit in length field in metadata
 
 void init(int, char **);
 void connect_to_radio();
@@ -30,6 +33,9 @@ void die(int, const char *);
 void get_metaint();
 void log_radio_buffer();
 void main_loop();
+void handle_master_command();
+void handle_radio_stream();
+
 void fix_header_overflow();
 void open_master_socket();
 void show_metadata();
@@ -40,69 +46,117 @@ int out_fd;
 int icy_metaint;
 bool quit;
 bool paused;
-string header_buffer;
+
+string header_buffer; //storage for header, string to find
 
 char rbuffer[RADIO_BUFFER_SIZE];
-char master_buffer[MASTER_BUFFER_SIZE];
-size_t rbuffer_pos;
+int rbuffer_pos; //position to write (from socket)
 
+queue<char> audio;
+queue<char> metadata_tmp;
+queue<char> metadata_rdonly;
 
-int main(int argc, char **argv)
+void debug_print_md()
 {
-    static_assert(RADIO_BUFFER_SIZE > HEADER_READ_SIZE, "fix it");
-
-    init(argc, argv);
-    connect_to_radio();
-    open_master_socket();
-    get_header();
-    if(header_buffer.find("ICY 200 OK") == string::npos)
-        die(1, "http request rejected");
-    else
+    char *metadata = new char[metadata_rdonly.size()];
+    queue<char> tmp = metadata_rdonly;
+    for(int i = 0; i < metadata_rdonly.size(); i++)
     {
-        if(args.md_string == "yes") get_metaint();
-        fix_header_overflow();
-        main_loop();
+        metadata[i] = tmp.front();
+        tmp.pop();
+    }
+    printf("%s\n", metadata);
+    for(int i = 0; i < metadata_rdonly.size(); i++)
+        printf("%d ", metadata[i]);
+    printf("\n");
+    delete[] metadata;
+}
+
+
+//while looking here keep in mind - computers are fast, programmers are lazy.
+void handle_radio_stream()
+{
+
+    static int bytes_from_last_md = 0;
+    static int md_read = 0;
+    static int md_length = 0;
+    static bool reading_md = false;
+
+
+    //at this moment, there maybe some data or metedata (from header overflow) in rbuffer
+
+    //clears rbuffer
+    for(int i = 0; i < rbuffer_pos; i++)
+    {
+        //log("%d %d %d\n", bytes_from_last_md, md_read, md_length);
+
+
+        if(bytes_from_last_md == icy_metaint) //md length byte
+        {
+            md_length = ((unsigned char) rbuffer[i]) * METADATA_SIZE_FACTOR;
+            bytes_from_last_md = 0;
+            reading_md = true;
+            printf("%d\n", md_length);
+            continue;
+
+        }
+
+        if(!reading_md) //normal audio data
+        {
+            if(!paused) audio.push(rbuffer[i]);
+            bytes_from_last_md++;
+            continue; //jump to next byte
+        }
+
+        if(reading_md) //metadata byte
+        {
+            if(md_read == md_length) //all metadata has been read
+            {
+                //store current md in rdonly queue
+                if(md_length != 0)
+                {
+                    metadata_rdonly = metadata_tmp;
+                    queue<char> empty; //clear tmp metadata
+                    swap(metadata_tmp, empty);
+                    debug_print_md();
+                }
+                md_read = 0;
+                md_length = 0;
+                reading_md = false;
+                i--; //we didnt processed this byte!
+            }
+            else
+            {
+                metadata_tmp.push(rbuffer[i]);
+                md_read++;
+            }
+            continue;
+        }
 
     }
+    rbuffer_pos = 0; //all bytes in buffer handled
 
-    return 0;
+    //send audio to out
+    while(audio.size() > 0)
+    {
+        char c = audio.front();
+        negative_is_bad(write(out_fd, &c, 1), "write error");
+        audio.pop();
+    }
+
+    //get new data from stream
+    //rbuffer must be empty now! (and it is, just reminding)
+    negative_is_bad(rbuffer_pos = read(socket_to[RADIO].fd, rbuffer, RADIO_BUFFER_SIZE),
+                    "read from socket (radio)");
+
+    if(rbuffer_pos == 0)
+        die(0, "server closed connection");
 }
-
-//copies audio data from header buffer to radio buffer
-void fix_header_overflow()
-{
-    size_t end = header_buffer.find("\r\n\r\n");
-    header_buffer.erase(header_buffer.begin(), header_buffer.begin() + end + 4);
-    memmove(rbuffer, header_buffer.c_str(), header_buffer.size());
-    rbuffer_pos = header_buffer.size();
-    log_radio_buffer();
-}
-
-void get_metaint()
-{
-    boost::regex pattern{"icy-metaint:(\\d{1, 9})"};
-    boost::smatch what;
-    boost::regex_search(header_buffer, what, pattern);
-    if(what.size() != 2)
-        die(1, "no icy-metaint found in header");
-    else
-        icy_metaint = stoi(what[1]);
-
-    log("icy_metaint is now %d\n", icy_metaint);
-
-}
-
-void show_metadata()
-{
-    //todo
-}
-
 
 
 void main_loop()
 {
-    //add udp controling
-    ssize_t readed, received;
+
     while(!quit)
     {
         socket_to[RADIO].revents = 0;
@@ -114,37 +168,85 @@ void main_loop()
             die(0, "server disconnected");
         if(socket_to[RADIO].revents == POLLERR || socket_to[MASTER].revents == POLLERR)
             die(0, "kitty has eaten ethernet cable, not my fault");
-        if(socket_to[RADIO].revents == POLLIN && !paused)
-        {
-            //todo add metadata parsing!
-            safe_all_write(out_fd, rbuffer, rbuffer_pos);
-            rbuffer_pos = 0;
-            negative_is_bad((readed = read(socket_to[RADIO].fd, rbuffer + rbuffer_pos, RADIO_BUFFER_SIZE - rbuffer_pos)),
-                            "error while reading from socket");
-            rbuffer_pos += readed;
-        }
+        if(socket_to[RADIO].revents == POLLIN)
+            handle_radio_stream();
         if(socket_to[MASTER].revents == POLLIN)
-        {
-            received = negative_is_bad(recv(socket_to[MASTER].fd, master_buffer, MASTER_BUFFER_SIZE-1, 0), "recv");
-            master_buffer[received] = '\0';
-            string command(master_buffer);
-            if(command == "PLAY")
-                paused = false;
-            if(command == "PAUSE")
-                paused = true;
-            if(command == "TITLE")
-                show_metadata();
-            if(command == QUIT)
-                quit = true;
-
-
-        }
-
+            handle_master_command();
     }
     die(0, "quit on demand");
 }
 
+/** ************************************************** */
 
+void handle_master_command()
+{
+    ssize_t received;
+    char msg_buffer[MASTER_BUFFER_SIZE];
+    struct sockaddr_in address;
+    socklen_t addr_len = sizeof(address);
+
+    negative_is_bad(received = recvfrom(socket_to[MASTER].fd, msg_buffer, MASTER_BUFFER_SIZE, 0,
+                                        (struct sockaddr *) &address, &addr_len), "recvfrom error");
+    msg_buffer[received] = '\0';
+    string command(msg_buffer);
+
+
+    //@todo remove \n
+    if(command == "PLAY\n")
+        paused = false;
+    if(command == "PAUSE\n")
+        paused = true;
+    if(command == "QUIT\n")
+        quit = true;
+
+    if(command == "TITLE\n")
+    {
+        string metadata;
+        queue<char> tmp = metadata_rdonly;
+        for(int i = 0; i < metadata_rdonly.size(); i++)
+        {
+            metadata.push_back(tmp.front());
+            tmp.pop();
+        }
+        boost::regex stream_title{"StreamTitle='(.*?)';"};
+        boost::smatch what;
+        boost::regex_search(metadata, what, stream_title);
+
+        if(what.size() == 2)
+        {
+            negative_is_bad(sendto(socket_to[MASTER].fd, what[1].str().c_str(), what[1].str().size(), 0, (struct sockaddr*) &address,
+                                    addr_len), "sendto error");
+        }
+
+
+
+
+    }
+
+    cout << command << endl;
+}
+
+
+//copies first data from header buffer to radio buffer
+void fix_header_overflow()
+{
+    size_t end = header_buffer.find("\r\n\r\n");
+    header_buffer.erase(header_buffer.begin(), header_buffer.begin() + end + 4);
+    memmove(rbuffer, header_buffer.c_str(), header_buffer.size());
+    rbuffer_pos = header_buffer.size();
+}
+
+void get_metaint()
+{
+    boost::regex pattern{"icy-metaint:(\\d{1, 9})"};
+    boost::smatch what;
+    boost::regex_search(header_buffer, what, pattern);
+    if(what.size() != 2)
+        die(1, "no icy-metaint found in header");
+    else
+        icy_metaint = stoi(what[1]);
+    log("icy_metaint is now %d\n", icy_metaint);
+}
 
 void log_radio_buffer()
 {
@@ -180,8 +282,6 @@ void get_header()
     while(header_buffer.find("\r\n\r\n") == string::npos);
 
     log("Header received!\n");
-
-    log_radio_buffer();
 
 }
 
@@ -257,7 +357,7 @@ void init(int argc, char **argv)
         if(filename == "-")
             out_fd = STDOUT_FILENO;
         else
-            negative_is_bad(open(argv[4], O_CREAT, 0666), "problem with argument: path_name");
+            negative_is_bad(out_fd = open(argv[4], O_CREAT | O_WRONLY, 0666), "problem with argument: path_name");
 
         pattern = port_regex;
         if(boost::regex_match(argv[5], pattern))
@@ -284,6 +384,7 @@ void init(int argc, char **argv)
     socket_to[MASTER].events = POLLIN | POLLERR;
     socket_to[RADIO].revents = socket_to[MASTER].revents = 0;
     icy_metaint = 0;
+    quit = false;
 
     log("Arguments: OK\nserver_name: %s\npath_name: %s\nradio_port: %s\noutfile_name: %s\nmaster_port: %s\nmd_string: %s\n",
         args.server_name.c_str(), args.path_name.c_str(), args.r_port.c_str(), args.outfile_name.c_str(),
@@ -311,4 +412,24 @@ void die(int code, const char *reason)
     exit(code);
 
 
+}
+
+int main(int argc, char **argv)
+{
+    static_assert(RADIO_BUFFER_SIZE > HEADER_READ_SIZE, "fix it");
+    init(argc, argv);
+    connect_to_radio();
+    open_master_socket();
+    get_header();
+    if(header_buffer.find("ICY 200 OK") == string::npos)
+        die(1, "http request rejected");
+    else
+    {
+        if(args.md_string == "yes") get_metaint();
+        fix_header_overflow();
+        main_loop();
+
+    }
+
+    return 0;
 }
