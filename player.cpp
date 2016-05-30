@@ -174,11 +174,11 @@ void main_loop()
         socket_to[RADIO].revents = 0;
         socket_to[MASTER].revents = 0;
 
-        fprintf(stderr, "%d\n", get_avaiable_time());
+        log("avail_time: %d\n", get_avaiable_time());
         negative_is_bad(poll_rv = poll(socket_to, 2, get_avaiable_time()), "poll error!");
 
         if(poll_rv == 0)
-            die(0, "server have not responded since 5 sec");
+            die(1, "server have not responded since 5 sec");
 
         if(socket_to[RADIO].revents == POLLHUP)
             die(0, "server disconnected");
@@ -250,7 +250,7 @@ void handle_radio_stream()
     //clears rbuffer
     for(int i = 0; i < rbuffer_pos; i++)
     {
-        if(bytes_from_last_md == icy_metaint) //md length byte
+        if(bytes_from_last_md == icy_metaint && icy_metaint != 0) //md length byte
         {
             md_length = ((unsigned char) rbuffer[i]) * METADATA_SIZE_FACTOR;
             bytes_from_last_md = 0;
@@ -349,7 +349,7 @@ void handle_header()
 
 void die(int code, const char *reason)
 {
-    //if(code != 0) //client cannot output nothing else than messages
+    if(code != 0) //client cannot output nothing else than messages
         fprintf(stderr, "Player is turning off: %s\n", reason);
 
     if(socket_to[RADIO].fd > 0)
@@ -396,7 +396,7 @@ void debug_print_md()
 void debug_print_rbuffer()
 {
     log("\n~~~ ~~~ ~~~ ~~~\n");
-    log("Buffer size: %d\n", (int) rbuffer_pos);
+    log("Buffer size: %d\n", rbuffer_pos);
     for(int i = 0; i < rbuffer_pos; i++)
         log("%c", rbuffer[i]);
     log("\n~~~ ~~~ ~~~ ~~~\n");
