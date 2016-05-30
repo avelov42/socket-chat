@@ -7,7 +7,7 @@ const bool DEBUG = true;
 
 struct Arguments
 {
-    std::string server_name, path_name, r_port, outfile_name, m_port, md_string;
+    std::string server_name, path_name, r_port, outfile, m_port, md_string;
 };
 
 
