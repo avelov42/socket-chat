@@ -8,7 +8,7 @@
 #include "player.h"
 #include "common.h"
 
-#define log _ignore
+#define log printf
 
 using namespace std;
 
